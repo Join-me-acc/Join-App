@@ -54,11 +54,6 @@ class _CompanionViewState extends State<CompanionView>
   bool _pendingGesture = true;
 
   _CompanionRig? get _rig => _CompanionRig.forAsset(widget.asset);
-  bool get _usesGif =>
-      widget.asset == 'assets/images/mascota/DRAGO.png' &&
-      !widget.portrait &&
-      widget.animationsEnabled &&
-      !_reducedMotion;
 
   @override
   void initState() {
@@ -152,7 +147,6 @@ class _CompanionViewState extends State<CompanionView>
 
   void _syncPlayback() {
     final run = _rig != null &&
-        !_usesGif &&
         widget.animationsEnabled &&
         !_reducedMotion &&
         _tickerEnabled &&
@@ -179,7 +173,6 @@ class _CompanionViewState extends State<CompanionView>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _foreground = state == AppLifecycleState.resumed;
     _syncPlayback();
-    if (_usesGif) setState(() {});
   }
 
   void _releaseImages() {
@@ -206,29 +199,6 @@ class _CompanionViewState extends State<CompanionView>
 
   @override
   Widget build(BuildContext context) {
-    if (_usesGif) {
-      return RepaintBoundary(
-        child: SizedBox(
-          width: widget.width,
-          height: widget.height,
-          child: AspectRatio(
-            aspectRatio: 2 / 3,
-            child: ExcludeSemantics(
-              child: TickerMode(
-                enabled: _tickerEnabled && _foreground,
-                child: Image.asset(
-                  'assets/images/mascota/animado/DRAGO',
-                  fit: BoxFit.contain,
-                  gaplessPlayback: true,
-                  errorBuilder: (context, error, stackTrace) =>
-                      Image.asset(widget.asset, fit: BoxFit.contain),
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
-    }
     final image = _image?.image;
     final child = _rig != null && image != null && _mesh != null
         ? CustomPaint(

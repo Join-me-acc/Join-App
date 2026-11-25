@@ -1,3 +1,4 @@
+
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -8,24 +9,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:join_app/core/widgets/companion_view.dart';
 
 void main() {
-  test('Drago supplied GIF decodes multiple distinct animation frames', () async {
-    TestWidgetsFlutterBinding.ensureInitialized();
-    final bytes = await rootBundle.load('assets/images/mascota/animado/DRAGO');
-    final codec = await ui.instantiateImageCodec(bytes.buffer.asUint8List());
-    expect(codec.frameCount, greaterThan(1));
-    final first = await codec.getNextFrame();
-    final firstPixels = await first.image.toByteData();
-    first.image.dispose();
-    for (var i = 0; i < 30; i++) {
-      final frame = await codec.getNextFrame();
-      frame.image.dispose();
-    }
-    final later = await codec.getNextFrame();
-    expect((await later.image.toByteData())!.buffer.asUint8List(),
-        isNot(orderedEquals(firstPixels!.buffer.asUint8List())));
-    later.image.dispose();
-    codec.dispose();
-  });
   const eli = 'assets/images/mascota/ELI.png';
   final boundaryKey = GlobalKey();
 
@@ -176,9 +159,7 @@ void main() {
       await load(tester, asset);
       await tester.pump(const Duration(milliseconds: 2600));
       expect(tester.takeException(), isNull);
-      if (name != 'DRAGO') {
-        expect(tester.binding.transientCallbackCount, greaterThan(0));
-      }
+      expect(tester.binding.transientCallbackCount, greaterThan(0));
       await tester.pumpWidget(scene(asset: asset, reduced: true));
       final frozen = await pixels(tester);
       await tester.pump(const Duration(seconds: 1));

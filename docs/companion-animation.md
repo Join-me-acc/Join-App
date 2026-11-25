@@ -110,9 +110,9 @@ Prompts utilizados para los otros compañeros (una generación por recurso):
 
 > Use case: precise-object-edit. Edit target: the attached HALO PNG mascot. Create one blink animation keyframe: change ONLY both eyes to gently fully CLOSED lavender purple eyelids, with subtle curved dark lash lines. Peaceful natural blink, not squeezing or frowning. Preserve the exact original head outline, facial features, smile, clothes, hands, body pose, textures, shading, lighting and color. No redesign. Preserve the original 1268x2167 framing and aspect ratio, no zoom, crop, padding or repositioning: the closed eyelids must register exactly over the original eyes when the two images are overlaid. Preserve the genuinely transparent background. No scenery, text, checkerboard, watermark, glow, or extra objects. Output one PNG for use as an eyelid texture in a Flutter character animation.
 
-## Drago GIF — 19 de octubre de 2026
+## Drago sin GIF — 24 de noviembre de 2026
 
-Se integra el archivo aportado `assets/images/mascota/animado/DRAGO` (GIF89a, 648 × 1152, 240 fotogramas, ~18 MB) en las vistas de cuerpo completo. Flutter interpreta la transparencia del GIF correctamente; la extracción con System.Drawing mostró el color de fondo de la paleta, pero la comprobación en Android confirmó el fondo transparente. Los retratos mantienen el recorte articulado anterior y la opción de movimiento reducido utiliza el arte estático. El GIF reproduce la secuencia aportada; no cambia de gesto según CompanionMotion. La reproducción se pausa al ocultarse la ruta o pasar la app a segundo plano.
+Se retiró el GIF de Drago (`assets/images/mascota/animado/DRAGO`, ~18 MB): pesaba casi tanto como el resto de la app, no reaccionaba a `CompanionMotion` y hacía que Drago se moviera distinto de ELI y HALO. Los tres usan ahora el mismo sistema articulado (malla con párpados y gestos), con el arte original y `DRAGO-blink.png`; `CompanionMotion` y el modo de movimiento reducido funcionan igual para los tres.
 
 La compilación debug incluye `/preview-drago` para revisarlo sin iniciar sesión, con botón para volver a Join. No está disponible en release. Los contenedores existentes de Join se arrancaron sin modificar los volúmenes.
 
