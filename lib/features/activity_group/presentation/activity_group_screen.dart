@@ -1,0 +1,2035 @@
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:flutter_animate/flutter_animate.dart';
+import 'package:go_router/go_router.dart';
+import 'package:provider/provider.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:join_app/core/providers/app_state.dart';
+import 'package:join_app/features/activity/presentation/widgets/activity_not_found.dart';
+import 'package:join_app/core/repositories/supabase_chat_repository.dart';
+import 'package:join_app/core/crypto/chat_crypto.dart';
+import 'package:join_app/core/widgets/encrypted_chat_image.dart';
+import 'package:join_app/core/widgets/chat_chrome.dart';
+import 'package:join_app/core/models/activity_lifecycle.dart';
+import 'package:join_app/features/activity_group/presentation/widgets/activity_wrapup.dart';
+import 'package:join_app/core/models/chat_message_model.dart';
+import 'package:join_app/core/models/contribution_model.dart';
+import 'package:join_app/core/models/activity_model.dart';
+import 'package:join_app/core/models/interest_model.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:join_app/features/activity/presentation/widgets/iguana_checklist.dart';
+import 'package:join_app/features/activity_games/presentation/widgets/game_result_card.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart' as google_maps;
+import 'package:url_launcher/url_launcher.dart';
+
+class ActivityGroupScreen extends StatefulWidget {
+  final String activityId;
+
+  const ActivityGroupScreen({super.key, required this.activityId});
+
+  @override
+  State<ActivityGroupScreen> createState() => _ActivityGroupScreenState();
+}
+
+class _ActivityGroupScreenState extends State<ActivityGroupScreen>
+    with SingleTickerProviderStateMixin {
+  late TabController _tabController;
+  late List<ChatMessage> messages;
+  late List<Contribution> contributions;
+  final TextEditingController _messageController = TextEditingController();
+  final SupabaseChatRepository _chatRepo = SupabaseChatRepository();
+
+  bool _isLoadingChat = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 3, vsync: this);
+    messages = [];
+    contributions = [];
+    _loadChatMessages();
+    _loadContributions();
+  }
+
+  Future<void> _loadContributions() async {
+    try {
+      final fetched = await _chatRepo.getContributions(widget.activityId);
+      if (mounted) {
+        setState(() => contributions = fetched);
+      }
+    } catch (e) {
+      debugPrint('Error cargando aportes: $e');
+    }
+  }
+
+  Future<void> _loadChatMessages() async {
+    try {
+      final msgs = await _chatRepo.getMessages(widget.activityId);
+      // Marcar como leído (en segundo plano)
+      _chatRepo.markRead(widget.activityId);
+
+      if (mounted) {
+        setState(() {
+          messages = msgs;
+          _isLoadingChat = false;
+        });
+      }
+    } catch (e, stack) {
+      if (mounted) setState(() => _isLoadingChat = false);
+      debugPrint('Error loading chat messages: $e');
+      debugPrint('Stacktrace: $stack');
+    }
+  }
+
+  Future<void> _sendMessage({File? image}) async {
+    final text = _messageController.text.trim();
+    if (text.isEmpty && image == null) return;
+
+    _messageController.clear();
+
+    try {
+      // El texto va en claro: el repositorio lo cifra con la clave vigente.
+      final sent = await _chatRepo.sendMessage(
+        activityId: widget.activityId,
+        message: text,
+        image: image,
+      );
+
+      // Añadir de forma optimista mientras recargamos todo
+      setState(() {
+        messages.insert(
+            0,
+            ChatMessage(
+              id: sent.id,
+              userId: context.read<AppState>().currentUser?.id ?? 'me',
+              userName: context.read<AppState>().currentUser?.name ?? 'Tú',
+              userImageUrl:
+                  context.read<AppState>().currentUser?.profileImageUrl ?? '',
+              message: text,
+              timestamp: DateTime.now(),
+              type: image != null ? MessageType.image : MessageType.text,
+              imageUrls: sent.imagePath != null ? [sent.imagePath!] : null,
+            ));
+      });
+
+      _loadChatMessages(); // Recargar orden oficial
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Error al enviar: $e')));
+      }
+    }
+  }
+
+  Future<void> _pickImage(ImageSource source) async {
+    final ImagePicker picker = ImagePicker();
+    final XFile? image =
+        await picker.pickImage(source: source, imageQuality: 70);
+    if (image != null) {
+      await _sendMessage(image: File(image.path));
+    }
+  }
+
+  void _showAttachmentOptions() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        decoration: BoxDecoration(
+          color: Theme.of(context).brightness == Brightness.dark
+              ? const Color(0xFF161920)
+              : Colors.white,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: SafeArea(
+          top: false,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: CircleAvatar(
+                  backgroundColor:
+                      const Color(0xFFFD7C36).withValues(alpha: 0.1),
+                  child: const Icon(Icons.photo_camera_rounded,
+                      color: Color(0xFFFD7C36)),
+                ),
+                title: const Text('Cámara'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _pickImage(ImageSource.camera);
+                },
+              ),
+              ListTile(
+                leading: CircleAvatar(
+                  backgroundColor:
+                      const Color(0xFFFD7C36).withValues(alpha: 0.1),
+                  child: const Icon(Icons.photo_library_rounded,
+                      color: Color(0xFFFD7C36)),
+                ),
+                title: const Text('Galería'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _pickImage(ImageSource.gallery);
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _deleteMessage(ChatMessage message) async {
+    try {
+      await _chatRepo.deleteMessage(message.id);
+      setState(() => messages.removeWhere((m) => m.id == message.id));
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Mensaje eliminado')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Error: $e')));
+      }
+    }
+  }
+
+  Future<void> _editMessage(ChatMessage message, String newText) async {
+    try {
+      await _chatRepo.editMessage(widget.activityId, message.id, newText);
+      setState(() {
+        final index = messages.indexWhere((m) => m.id == message.id);
+        if (index != -1) {
+          messages[index] =
+              messages[index].copyWith(message: newText, isEdited: true);
+        }
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Mensaje editado')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Error: $e')));
+      }
+    }
+  }
+
+  Future<void> _reactToMessage(ChatMessage message, String reaction) async {
+    final currentUserId = context.read<AppState>().currentUser?.id ?? 'me';
+    try {
+      final action = await _chatRepo.toggleReaction(message.id, reaction);
+
+      setState(() {
+        final index = messages.indexWhere((m) => m.id == message.id);
+        if (index != -1) {
+          final msg = messages[index];
+          final reactions = List<MessageReaction>.from(msg.reactions);
+          final existingIndex = reactions.indexWhere(
+              (r) => r.userId == currentUserId && r.reaction == reaction);
+
+          if (action == 'removed') {
+            if (existingIndex != -1) reactions.removeAt(existingIndex);
+          } else if (action == 'added' || action == 'updated') {
+            if (existingIndex == -1) {
+              reactions.removeWhere((r) => r.userId == currentUserId);
+              reactions.add(
+                  MessageReaction(userId: currentUserId, reaction: reaction));
+            }
+          }
+          messages[index] = msg.copyWith(reactions: reactions);
+        }
+      });
+    } catch (e) {
+      // Ignorar
+    }
+  }
+
+  void _showMessageOptions(ChatMessage message) {
+    final currentUserId = context.read<AppState>().currentUser?.id;
+    final isMine = message.userId == currentUserId;
+
+    final activity = context
+        .read<AppState>()
+        .activities
+        .where((a) => a.id == widget.activityId)
+        .firstOrNull;
+    final isOrganizer =
+        activity != null && activity.organizerId == currentUserId;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        decoration: BoxDecoration(
+          color: Theme.of(context).brightness == Brightness.dark
+              ? const Color(0xFF161920)
+              : Colors.white,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: ['👍', '❤️', '😂', '😮', '😢', '👏']
+                  .map((emoji) => InkWell(
+                        onTap: () {
+                          Navigator.pop(context);
+                          _reactToMessage(message, emoji);
+                        },
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child:
+                              Text(emoji, style: const TextStyle(fontSize: 28)),
+                        ),
+                      ))
+                  .toList(),
+            ),
+            const Divider(),
+            if (isMine &&
+                DateTime.now().difference(message.timestamp).inSeconds <= 50)
+              ListTile(
+                leading: const Icon(Icons.edit, color: Colors.blue),
+                title: const Text('Editar (50s)'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _showEditDialog(message);
+                },
+              ),
+            if (isMine)
+              ListTile(
+                leading: const Icon(Icons.info_outline, color: Colors.blueGrey),
+                title: const Text('Info. del mensaje'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _showReadByInfo(message);
+                },
+              ),
+            if (isMine || isOrganizer)
+              ListTile(
+                leading: const Icon(Icons.delete, color: Colors.red),
+                title:
+                    const Text('Eliminar', style: TextStyle(color: Colors.red)),
+                onTap: () {
+                  Navigator.pop(context);
+                  _deleteMessage(message);
+                },
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showReadByInfo(ChatMessage message) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Theme.of(context).brightness == Brightness.dark
+          ? const Color(0xFF161920)
+          : Colors.white,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (context) {
+        return DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: 0.5,
+          maxChildSize: 0.9,
+          builder: (_, controller) => Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Text('Visto por (${message.readBy.length})',
+                    style: const TextStyle(
+                        fontSize: 18, fontWeight: FontWeight.bold)),
+              ),
+              const Divider(),
+              if (message.readBy.isEmpty)
+                const Expanded(
+                    child:
+                        Center(child: Text('Nadie ha visto este mensaje aún.')))
+              else
+                Expanded(
+                  child: ListView.builder(
+                    controller: controller,
+                    itemCount: message.readBy.length,
+                    itemBuilder: (context, index) {
+                      final read = message.readBy[index];
+                      return ListTile(
+                        leading: const CircleAvatar(
+                            backgroundColor: Color(0xFFFD7C36),
+                            child: Icon(Icons.person, color: Colors.white)),
+                        title: Text(read.userName,
+                            style:
+                                const TextStyle(fontWeight: FontWeight.bold)),
+                        subtitle: Text(
+                            'Leído el ${read.readAt.toString().substring(0, 16)}',
+                            style: TextStyle(
+                                color: Theme.of(context).brightness ==
+                                        Brightness.dark
+                                    ? Colors.white54
+                                    : Colors.grey[600],
+                                fontSize: 12)),
+                      );
+                    },
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _showEditDialog(ChatMessage message) {
+    final controller = TextEditingController(text: message.message);
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Editar mensaje'),
+        content: TextField(
+          controller: controller,
+          maxLines: null,
+          decoration: const InputDecoration(border: OutlineInputBorder()),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancelar')),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(context);
+              if (controller.text.trim().isNotEmpty) {
+                _editMessage(message, controller.text.trim());
+              }
+            },
+            child: const Text('Guardar'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    _messageController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final appState = context.watch<AppState>();
+    final activity =
+        appState.activities.where((a) => a.id == widget.activityId).firstOrNull;
+    if (activity == null) {
+      return const ActivityNotFound(
+        titulo: 'Grupo no disponible',
+        mensaje:
+            'La actividad de este grupo ya no existe o dejaste de participar en ella.',
+      );
+    }
+
+    // Aquí ya no sobrescribimos "contributions" con la data estática.
+    // Lo dejamos tal cual lo carga _loadContributions de la base de datos.
+
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final mainCategory = CategoryConstants.mainCategoryOf(activity.category);
+    final accent =
+        CategoryConstants.colors[mainCategory] ?? const Color(0xFFFD7C36);
+    final participants = activity.currentParticipants;
+    final isOrganizer =
+        activity.organizerId == appState.currentUser?.id;
+    final subtitle = participants == 0
+        ? (isOrganizer ? 'Solo tú por ahora' : 'Grupo recién creado')
+        : '$participants ${participants == 1 ? 'participante' : 'participantes'}';
+
+    return Scaffold(
+      body: Column(
+        children: [
+          // ── Cabecera ────────────────────────────────────────────
+          ChatHeader(
+            avatar: ChatAvatar(
+              imageUrl: activity.imageUrl,
+              accent: accent,
+              fallbackText: activity.title,
+            ),
+            title: activity.title,
+            subtitle: subtitle,
+            semanticLabel: 'Ver plan ${activity.title}',
+            onTapTitle: () =>
+                context.push('/main/activity/${widget.activityId}'),
+            trailing: ChatHeaderPill(
+              icon: Icons.sports_esports_rounded,
+              label: 'Juegos',
+              onTap: () =>
+                  context.push('/main/activity/${widget.activityId}/games'),
+            ),
+          ),
+
+          // ── Pestañas tipo segmento ───────────────────────────────
+          Container(
+            height: 46,
+            margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            padding: const EdgeInsets.all(4),
+            decoration: BoxDecoration(
+              color: isDark ? const Color(0xFF1A1F29) : const Color(0xFFF1F3F7),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: TabBar(
+              controller: _tabController,
+              labelColor: isDark ? Colors.white : const Color(0xFFEA580C),
+              unselectedLabelColor:
+                  isDark ? Colors.white54 : const Color(0xFF64748B),
+              labelStyle:
+                  GoogleFonts.outfit(fontWeight: FontWeight.w700, fontSize: 13),
+              unselectedLabelStyle:
+                  GoogleFonts.outfit(fontWeight: FontWeight.w600, fontSize: 13),
+              indicatorSize: TabBarIndicatorSize.tab,
+              dividerColor: Colors.transparent,
+              splashBorderRadius: BorderRadius.circular(12),
+              indicator: BoxDecoration(
+                color: isDark ? const Color(0xFF2A3140) : Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.08),
+                    blurRadius: 10,
+                    offset: const Offset(0, 3),
+                  ),
+                ],
+              ),
+              tabs: const [
+                _SegmentTab(icon: Icons.chat_bubble_rounded, label: 'Chat'),
+                _SegmentTab(icon: Icons.inventory_2_rounded, label: 'Aportes'),
+                _SegmentTab(icon: Icons.place_rounded, label: 'Ubicación'),
+              ],
+            ),
+          ),
+          // Tab Views
+          Expanded(
+            child: TabBarView(
+              controller: _tabController,
+              children: [
+                // Chat Tab
+                _buildChatTab(activity),
+                // Contributions Tab
+                _buildContributionsTab(activity),
+                // Location Tab
+                _buildLocationTab(activity),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Tab de Chat
+  Widget _buildChatTab(Activity activity) {
+    final pinnedMessages = messages.where((m) => m.isPinned).toList();
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final appState = context.watch<AppState>();
+    final phase = activity.phase;
+    final needsRating = appState.pendingRatingIds.contains(activity.id);
+    void openMural() =>
+        context.push('/main/activity/${widget.activityId}/photos');
+    void openRating() =>
+        context.push('/main/activity/${widget.activityId}/feedback');
+    void openClan() => createClanFromActivity(context, activity);
+
+    return Column(
+      children: [
+        // El plan terminó: 2 días para despedirse, calificar y armar un clan.
+        if (phase == ActivityPhase.ended)
+          ActivityWrapUpBanner(
+            activity: activity,
+            needsRating: needsRating,
+            onRate: openRating,
+            onMural: openMural,
+            onClan: openClan,
+          ),
+        // Mensajes fijados (si los hay)
+        if (pinnedMessages.isNotEmpty) ...[
+          Container(
+            padding: const EdgeInsets.all(12),
+            color: isDark ? const Color(0xFF2D2A10) : Colors.amber[50],
+            child: Row(
+              children: [
+                Icon(Icons.push_pin,
+                    size: 16,
+                    color: isDark ? Colors.amber[300] : Colors.amber[800]),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '${pinnedMessages.length} mensaje(s) fijado(s)',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: isDark ? Colors.amber[300] : Colors.amber[800],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+        // Lista de mensajes
+        Expanded(
+          child: Container(
+            decoration: chatWallpaper(isDark),
+            child: _isLoadingChat
+                ? const Center(child: CircularProgressIndicator())
+                : messages.isEmpty
+                    ? phase != ActivityPhase.upcoming
+                    ? ChatEmptyState(
+                        icon: Icons.photo_library_rounded,
+                        title: 'El plan terminó',
+                        message:
+                            'Nadie escribió en este grupo, pero aún pueden dejar su recuerdo en el mural.',
+                        actions: [
+                          ChatEmptyAction('Mural de recuerdos',
+                              Icons.photo_library_rounded, openMural),
+                        ],
+                        onSecurity: () => context.push('/recovery-phrase'),
+                      )
+                    : ChatEmptyState(
+                        title: 'Rompe el hielo',
+                        message:
+                            'Todavía no hay mensajes. Saluda al grupo o propón un juego para entrar en confianza.',
+                        actions: [
+                          ChatEmptyAction(
+                              'Saludar', Icons.waving_hand_outlined, () {
+                            _messageController.text = '¡Hola a todos! 👋';
+                            _messageController.selection =
+                                TextSelection.collapsed(
+                                    offset: _messageController.text.length);
+                          }),
+                          ChatEmptyAction(
+                            'Juegos',
+                            Icons.sports_esports_rounded,
+                            () => context.push(
+                                '/main/activity/${widget.activityId}/games'),
+                          ),
+                        ],
+                        onSecurity: () => context.push('/recovery-phrase'),
+                      )
+                    : ListView.builder(
+                    reverse: true,
+                    padding: const EdgeInsets.all(16),
+                    itemCount: messages.length + 1,
+                    itemBuilder: (context, index) {
+                      if (index == messages.length) {
+                        return Center(
+                          // El aviso lleva a la frase de recuperación: es donde el
+                          // usuario descubre que la clave es suya y que conviene
+                          // apuntarla antes de cambiar de móvil.
+                          child: GestureDetector(
+                            onTap: () => context.push('/recovery-phrase'),
+                            child: Container(
+                              margin:
+                                  const EdgeInsets.only(top: 16, bottom: 16),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 16, vertical: 10),
+                              decoration: BoxDecoration(
+                                  color: isDark
+                                      ? const Color(0xFF2D2A10)
+                                      : const Color(0xFFFEF3C7),
+                                  borderRadius: BorderRadius.circular(20),
+                                  border: Border.all(
+                                      color: isDark
+                                          ? Colors.amber.withValues(alpha: 0.25)
+                                          : const Color(0xFFFDE68A)),
+                                  boxShadow: [
+                                    BoxShadow(
+                                        color:
+                                            Colors.amber.withValues(alpha: 0.1),
+                                        blurRadius: 10,
+                                        offset: const Offset(0, 4)),
+                                  ]),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.all(4),
+                                    decoration: const BoxDecoration(
+                                        color: Color(0xFFF59E0B),
+                                        shape: BoxShape.circle),
+                                    child: const Icon(Icons.lock_rounded,
+                                        size: 10, color: Colors.white),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    'Mensajes cifrados de extremo a extremo',
+                                    style: TextStyle(
+                                        fontSize: 11,
+                                        color: isDark
+                                            ? Colors.amber[200]
+                                            : const Color(0xFFB45309),
+                                        fontWeight: FontWeight.bold,
+                                        letterSpacing: 0.3),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Icon(Icons.chevron_right_rounded,
+                                      size: 14,
+                                      color: isDark
+                                          ? Colors.amber[200]
+                                          : const Color(0xFFB45309)),
+                                ],
+                              ),
+                            )
+                                .animate()
+                                .slideY(
+                                    begin: -0.5,
+                                    duration: 400.ms,
+                                    curve: Curves.easeOut)
+                                .fadeIn(delay: 200.ms),
+                          ),
+                        );
+                      }
+                      final message = messages[
+                          index]; // ListView.builder(reverse: true) ya los lee desde abajo
+                      final gameResult =
+                          message.type == MessageType.gameResult &&
+                                  message.isReadable
+                              ? GameResultCard.parse(message.message)
+                              : null;
+                      if (gameResult != null) {
+                        return GameResultCard(
+                          payload: gameResult,
+                          authorName: message.userName,
+                          timeLabel: message.getTimeString(),
+                          onRematch: () => context.push(
+                              '/main/activity/${widget.activityId}/games/impostor'
+                              '?rematch=${gameResult.sessionId}'),
+                        ).animate().fadeIn(duration: 300.ms);
+                      }
+                      return GestureDetector(
+                        onLongPress: () => _showMessageOptions(message),
+                        child: _ChatMessageBubble(
+                          message: message,
+                          activityId: widget.activityId,
+                        ).animate().fadeIn(duration: 300.ms),
+                      );
+                    },
+                  ),
+          ),
+        ),
+        // ── Barra de escritura ──────────────────────────────────
+        if (phase == ActivityPhase.chatClosed)
+          ClosedChatBar(
+            activity: activity,
+            onMural: openMural,
+            onClan: openClan,
+          )
+        else
+          ChatComposer(
+            controller: _messageController,
+            onAttach: _showAttachmentOptions,
+            onSend: _sendMessage,
+          ),
+      ],
+    );
+  }
+
+  /// Tab de Aportes
+  Widget _buildContributionsTab(Activity activity) {
+    final coveredContributions =
+        contributions.where((c) => c.isCovered).toList();
+    final uncoveredContributions =
+        contributions.where((c) => !c.isCovered).toList();
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Checklist interactivo de la iguana — "¿llevas todo?"
+          IguanaChecklist(activity: activity),
+
+          // Progreso general
+          _buildProgressSection(coveredContributions, contributions),
+          const SizedBox(height: 24),
+
+          // Aportes Cubiertos
+          if (coveredContributions.isNotEmpty) ...[
+            Row(
+              children: [
+                const Icon(Icons.check_circle, color: Colors.green, size: 20),
+                const SizedBox(width: 8),
+                Text(
+                  'Cubiertos (${coveredContributions.length})',
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 14),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Column(
+              children: coveredContributions.asMap().entries.map((entry) {
+                final index = entry.key;
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: _ContributionCard(
+                    contribution: entry.value,
+                    onToggle: () => _toggleContribution(entry.value),
+                  ).animate().fadeIn(duration: 300.ms, delay: (index * 50).ms),
+                );
+              }).toList(),
+            ),
+            const Divider(height: 32),
+          ],
+
+          // Aportes Pendientes
+          if (uncoveredContributions.isNotEmpty) ...[
+            Row(
+              children: [
+                const Icon(Icons.pending_actions,
+                    color: Colors.orange, size: 20),
+                const SizedBox(width: 8),
+                Text(
+                  'Pendientes (${uncoveredContributions.length})',
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 14),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Column(
+              children: uncoveredContributions.asMap().entries.map((entry) {
+                final index = entry.key;
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: _ContributionCard(
+                    contribution: entry.value,
+                    onToggle: () => _toggleContribution(entry.value),
+                  ).animate().fadeIn(duration: 300.ms, delay: (index * 50).ms),
+                );
+              }).toList(),
+            ),
+          ],
+
+          const SizedBox(height: 24),
+
+          // Botón para sugerir nuevo aporte
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () => _showAddContributionDialog(),
+              icon: const Icon(Icons.add),
+              label: const Text('Sugerir Aporte'),
+            ),
+          ),
+
+          const Divider(height: 48, thickness: 1),
+
+          // Banco de Ideas y Sugerencias
+          _buildSuggestionsSection(activity),
+        ],
+      ),
+    );
+  }
+
+  /// Banco de Ideas y Sugerencias Section
+  Widget _buildSuggestionsSection(Activity activity) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final suggestions = activity.suggestions;
+    final currentUserId = context.read<AppState>().currentUser?.id;
+    final isOrganizer = activity.organizerId == currentUserId;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color:
+                    isDark ? const Color(0xFF2D2A10) : const Color(0xFFFFF8E1),
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: isDark
+                      ? Colors.amber.withValues(alpha: 0.2)
+                      : Colors.amber[200]!,
+                  width: 1.5,
+                ),
+              ),
+              child: const Icon(Icons.lightbulb_outline_rounded,
+                  color: Colors.amber, size: 20),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Banco de Ideas y Sugerencias',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w800,
+                      fontSize: 15,
+                      letterSpacing: -0.3,
+                      color: isDark ? Colors.white : Colors.black87,
+                    ),
+                  ),
+                  Text(
+                    'Ideas propuestas por el organizador para esta actividad',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: isDark ? Colors.white54 : Colors.grey[600],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        if (suggestions.isEmpty)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
+            decoration: BoxDecoration(
+              color: isDark
+                  ? const Color(0xFF2D2A10).withValues(alpha: 0.1)
+                  : Colors.amber.withValues(alpha: 0.03),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: isDark
+                    ? Colors.amber.withValues(alpha: 0.1)
+                    : Colors.amber.withValues(alpha: 0.15),
+                width: 1,
+              ),
+            ),
+            child: Column(
+              children: [
+                Icon(Icons.lightbulb_rounded,
+                    size: 32, color: Colors.amber.withValues(alpha: 0.5)),
+                const SizedBox(height: 8),
+                Text(
+                  'No hay sugerencias aún',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: isDark ? Colors.white70 : Colors.black87,
+                  ),
+                ),
+                if (isOrganizer) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    'Como organizador, puedes proponer ideas para el grupo.',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: isDark ? Colors.white54 : Colors.grey[600],
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ],
+            ),
+          )
+        else
+          Column(
+            children: suggestions.asMap().entries.map((entry) {
+              final index = entry.key;
+              final suggestion = entry.value;
+              return Container(
+                margin: const EdgeInsets.only(bottom: 10),
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: isDark ? const Color(0xFF161920) : Colors.white,
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(
+                    color: isDark
+                        ? Colors.white.withValues(alpha: 0.08)
+                        : Colors.grey.withValues(alpha: 0.15),
+                    width: 1.5,
+                  ),
+                  boxShadow: isDark
+                      ? []
+                      : [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.02),
+                            blurRadius: 8,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(6),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.withValues(alpha: 0.1),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Text('💡', style: TextStyle(fontSize: 14)),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        suggestion,
+                        style: TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w500,
+                          color: isDark ? Colors.white : Colors.black87,
+                        ),
+                      ),
+                    ),
+                    if (isOrganizer)
+                      IconButton(
+                        icon: const Icon(Icons.delete_outline_rounded,
+                            color: Colors.redAccent, size: 18),
+                        onPressed: () =>
+                            _removeSuggestion(activity, suggestion),
+                        tooltip: 'Eliminar sugerencia',
+                      ),
+                  ],
+                ),
+              ).animate().fadeIn(duration: 300.ms, delay: (index * 50).ms);
+            }).toList(),
+          ),
+        if (isOrganizer) ...[
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: TextButton.icon(
+              onPressed: () => _showAddSuggestionDialog(activity),
+              icon: const Icon(Icons.add_circle_outline_rounded,
+                  color: Colors.amber, size: 18),
+              label: const Text(
+                'Proponer Idea / Sugerencia',
+                style: TextStyle(
+                    color: Colors.amber,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13.5),
+              ),
+              style: TextButton.styleFrom(
+                backgroundColor: Colors.amber.withValues(alpha: 0.08),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                  side: BorderSide(color: Colors.amber.withValues(alpha: 0.2)),
+                ),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  void _showAddSuggestionDialog(Activity activity) {
+    final controller = TextEditingController();
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: isDark ? const Color(0xFF161920) : Colors.white,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          title: Row(
+            children: [
+              const Text('💡 '),
+              Text(
+                'Proponer Sugerencia',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 18,
+                  color: isDark ? Colors.white : Colors.black87,
+                ),
+              ),
+            ],
+          ),
+          content: TextField(
+            controller: controller,
+            maxLines: 3,
+            decoration: InputDecoration(
+              hintText: 'Ej: Llevar protector solar o ropa cómoda...',
+              hintStyle:
+                  TextStyle(color: isDark ? Colors.white30 : Colors.grey[400]),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(16),
+                borderSide: BorderSide(
+                    color: isDark ? Colors.white24 : Colors.grey[300]!),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(16),
+                borderSide: const BorderSide(color: Colors.amber, width: 2),
+              ),
+              filled: true,
+              fillColor: isDark ? const Color(0xFF1E222B) : Colors.grey[50],
+            ),
+            style: TextStyle(color: isDark ? Colors.white : Colors.black87),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text(
+                'Cancelar',
+                style: TextStyle(
+                    color: isDark ? Colors.white54 : Colors.grey[600]),
+              ),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                final text = controller.text.trim();
+                if (text.isNotEmpty) {
+                  Navigator.pop(context);
+                  await _addSuggestion(activity, text);
+                }
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.amber,
+                foregroundColor: Colors.black,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14)),
+              ),
+              child: const Text('Proponer',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _addSuggestion(Activity activity, String suggestion) async {
+    try {
+      final updatedSuggestions = [...activity.suggestions, suggestion];
+      final updatedActivity =
+          activity.copyWith(suggestions: updatedSuggestions);
+
+      await context.read<AppState>().updateActivity(updatedActivity);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Sugerencia añadida correctamente'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Error al añadir sugerencia: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error al añadir sugerencia: $e'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _removeSuggestion(Activity activity, String suggestion) async {
+    try {
+      final updatedSuggestions =
+          activity.suggestions.where((s) => s != suggestion).toList();
+      final updatedActivity =
+          activity.copyWith(suggestions: updatedSuggestions);
+
+      await context.read<AppState>().updateActivity(updatedActivity);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Sugerencia eliminada correctamente'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Error al eliminar sugerencia: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error al eliminar sugerencia: $e'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+    }
+  }
+
+  /// Tab de Ubicación
+  Widget _buildLocationTab(Activity activity) {
+    if (activity.latitude == null || activity.longitude == null) {
+      return const Center(child: Text('Ubicación exacta no disponible.'));
+    }
+
+    return Padding(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.grey[50],
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: Colors.grey.shade200),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.location_on_rounded,
+                    color: Colors.blue, size: 28),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    activity.locationName.isNotEmpty
+                        ? activity.locationName
+                        : activity.location,
+                    style: const TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+          ).animate().fadeIn(duration: 600.ms, delay: 100.ms),
+          const SizedBox(height: 16),
+          Expanded(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(24),
+              child: google_maps.GoogleMap(
+                initialCameraPosition: google_maps.CameraPosition(
+                  target: google_maps.LatLng(
+                    activity.latitude!,
+                    activity.longitude!,
+                  ),
+                  zoom: 15,
+                ),
+                markers: {
+                  google_maps.Marker(
+                    markerId: const google_maps.MarkerId('activity-location'),
+                    position: google_maps.LatLng(
+                      activity.latitude!,
+                      activity.longitude!,
+                    ),
+                    infoWindow: google_maps.InfoWindow(
+                      title: activity.locationName.isNotEmpty
+                          ? activity.locationName
+                          : activity.location,
+                    ),
+                    icon: google_maps.BitmapDescriptor.defaultMarkerWithHue(
+                      google_maps.BitmapDescriptor.hueAzure,
+                    ),
+                  ),
+                },
+                mapToolbarEnabled: false,
+                zoomControlsEnabled: false,
+                myLocationButtonEnabled: false,
+              ),
+            ),
+          ).animate().fadeIn(duration: 600.ms, delay: 200.ms),
+          Padding(
+            padding: const EdgeInsets.only(top: 16.0, bottom: 8.0),
+            child: SizedBox(
+              width: double.infinity,
+              height: 50,
+              child: OutlinedButton.icon(
+                onPressed: () async {
+                  final url =
+                      'https://www.google.com/maps/search/?api=1&query=${activity.latitude},${activity.longitude}';
+                  if (await canLaunchUrl(Uri.parse(url))) {
+                    await launchUrl(Uri.parse(url),
+                        mode: LaunchMode.externalApplication);
+                  }
+                },
+                style: OutlinedButton.styleFrom(
+                  side: BorderSide(color: Colors.grey.shade300),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16)),
+                ),
+                icon: const Icon(Icons.map_rounded, color: Colors.blue),
+                label: const Text('Abrir en Google Maps / Otras apps',
+                    style: TextStyle(
+                        fontWeight: FontWeight.bold, color: Colors.black87)),
+              ),
+            ).animate().fadeIn(duration: 600.ms, delay: 300.ms),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Sección de progreso
+  Widget _buildProgressSection(
+      List<Contribution> covered, List<Contribution> total) {
+    final percentage = (covered.length / total.length * 100).toStringAsFixed(0);
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.green[50],
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.green[200]!),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'Progreso de Aportes',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.green,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  '$percentage%',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: LinearProgressIndicator(
+              value: covered.length / total.length,
+              minHeight: 8,
+              backgroundColor: Colors.green[200],
+              valueColor: AlwaysStoppedAnimation<Color>(Colors.green[600]!),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            '${covered.length} de ${total.length} aportes comprometidos',
+            style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Alternar un aporte (asignarse / desasignarse)
+  Future<void> _toggleContribution(Contribution contribution) async {
+    final currentUserId = context.read<AppState>().currentUser?.id;
+    if (currentUserId == null) return;
+
+    final isMine = contribution.assignedToUserId == currentUserId;
+
+    // Optimista
+    final index = contributions.indexWhere((c) => c.id == contribution.id);
+    if (index == -1) return;
+
+    final original = contributions[index];
+    setState(() {
+      if (isMine) {
+        contributions[index] = original.unassign();
+      } else {
+        contributions[index] = original.copyWith(
+          assignedToUserId: currentUserId,
+          assignedToUserName:
+              context.read<AppState>().currentUser?.name ?? 'Tú',
+          assignedToUserImage:
+              context.read<AppState>().currentUser?.profileImageUrl ?? '',
+        );
+      }
+    });
+
+    try {
+      if (isMine) {
+        await _chatRepo.unassignContribution(contribution.id);
+      } else {
+        await _chatRepo.assignContribution(contribution.id);
+      }
+      // Volvemos a cargarlos para sincronizar
+      _loadContributions();
+    } catch (e) {
+      // Revertir
+      if (mounted) {
+        setState(() => contributions[index] = original);
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Error: $e')));
+      }
+    }
+  }
+
+  /// Mostrar diálogo para agregar aporte
+  void _showAddContributionDialog() {
+    final titleController = TextEditingController();
+    final descriptionController = TextEditingController();
+    String selectedCategory = 'food';
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          titleController.addListener(() {
+            final text = titleController.text.toLowerCase();
+            String? newCat;
+            if (text.contains('comida') ||
+                text.contains('pizza') ||
+                text.contains('hamburguesa') ||
+                text.contains('taco') ||
+                text.contains('snack') ||
+                text.contains('piqueo') ||
+                text.contains('pollo') ||
+                text.contains('parrilla') ||
+                text.contains('carne')) {
+              newCat = 'food';
+            } else if (text.contains('bebida') ||
+                text.contains('gaseosa') ||
+                text.contains('agua') ||
+                text.contains('vino') ||
+                text.contains('cerveza') ||
+                text.contains('pisco') ||
+                text.contains('hielo') ||
+                text.contains('trago')) {
+              newCat = 'drinks';
+            } else if (text.contains('parlante') ||
+                text.contains('musica') ||
+                text.contains('juego') ||
+                text.contains('mesa') ||
+                text.contains('carta') ||
+                text.contains('pelota') ||
+                text.contains('balon')) {
+              newCat = 'entertainment';
+            } else if (text.contains('bloqueador') ||
+                text.contains('solar') ||
+                text.contains('repelente') ||
+                text.contains('vaso') ||
+                text.contains('plato') ||
+                text.contains('servilleta') ||
+                text.contains('bolsa') ||
+                text.contains('carbon')) {
+              newCat = 'supplies';
+            }
+
+            if (newCat != null && newCat != selectedCategory) {
+              setDialogState(() => selectedCategory = newCat!);
+            }
+          });
+
+          return AlertDialog(
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+            title: const Row(
+              children: [
+                Icon(Icons.lightbulb_outline_rounded, color: Colors.amber),
+                SizedBox(width: 8),
+                Text('Sugerir Aporte'),
+              ],
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    '¿Qué falta para que el plan sea perfecto?',
+                    style: TextStyle(fontSize: 13, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 20),
+                  TextField(
+                    controller: titleController,
+                    decoration: InputDecoration(
+                      labelText: '¿Qué llevarás?',
+                      hintText: 'Ej: Pastel de chocolate',
+                      prefixIcon: const Icon(Icons.shopping_bag_outlined),
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16)),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: descriptionController,
+                    maxLines: 2,
+                    decoration: InputDecoration(
+                      labelText: 'Descripción / Detalles',
+                      hintText: 'Opcional: Marca, cantidad...',
+                      prefixIcon: const Icon(Icons.info_outline_rounded),
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16)),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<String>(
+                    initialValue: selectedCategory,
+                    items: const [
+                      DropdownMenuItem(value: 'food', child: Text('🍕 Comida')),
+                      DropdownMenuItem(
+                          value: 'drinks', child: Text('🥤 Bebidas')),
+                      DropdownMenuItem(
+                          value: 'supplies', child: Text('🎒 Suministros')),
+                      DropdownMenuItem(
+                          value: 'entertainment',
+                          child: Text('🎵 Entretenimiento')),
+                    ],
+                    onChanged: (value) {
+                      setDialogState(() => selectedCategory = value ?? 'food');
+                    },
+                    decoration: InputDecoration(
+                      labelText: 'Categoría coincidente',
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16)),
+                      filled: true,
+                      fillColor: Colors.grey[50],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => context.pop(),
+                child: const Text('Cancelar',
+                    style: TextStyle(color: Colors.grey)),
+              ),
+              FilledButton(
+                onPressed: () async {
+                  if (titleController.text.isNotEmpty) {
+                    try {
+                      await _chatRepo.createContribution(
+                        activityId: widget.activityId,
+                        title: titleController.text,
+                        description: descriptionController.text,
+                        category: selectedCategory,
+                      );
+
+                      if (context.mounted) {
+                        context.pop();
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('✅ Aporte sugerido!'),
+                            backgroundColor: Colors.green,
+                            behavior: SnackBarBehavior.floating,
+                          ),
+                        );
+                        _loadContributions();
+                      }
+                    } catch (e) {
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Error al crear aporte: $e')),
+                        );
+                      }
+                    }
+                  }
+                },
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFFFD7C36),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                ),
+                child: const Text('Sugerir'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// Widget para mostrar un mensaje en el chat
+class _ChatMessageBubble extends StatelessWidget {
+  final ChatMessage message;
+
+  /// Hace falta para descifrar los adjuntos: la clave depende de a qué
+  /// conversación pertenecen.
+  final String activityId;
+
+  const _ChatMessageBubble({required this.message, required this.activityId});
+
+  @override
+  Widget build(BuildContext context) {
+    final currentUserId = context.read<AppState>().currentUser?.id;
+    final isCurrentUser = message.userId == currentUserId;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Column(
+      crossAxisAlignment:
+          isCurrentUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+      children: [
+        if (message.isPinned)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Row(
+              mainAxisAlignment: isCurrentUser
+                  ? MainAxisAlignment.end
+                  : MainAxisAlignment.start,
+              children: [
+                const Icon(Icons.push_pin, size: 12, color: Colors.amber),
+                const SizedBox(width: 4),
+                Text(
+                  'Fijado',
+                  style: TextStyle(
+                      fontSize: 10,
+                      color: Colors.amber[700],
+                      fontWeight: FontWeight.bold),
+                ),
+              ],
+            ),
+          ),
+        Container(
+          margin: const EdgeInsets.only(bottom: 16),
+          child: Row(
+            mainAxisAlignment:
+                isCurrentUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              if (!isCurrentUser) ...[
+                CircleAvatar(
+                  backgroundImage: message.userImageUrl.startsWith('http')
+                      ? NetworkImage(message.userImageUrl) as ImageProvider
+                      : const AssetImage('assets/images/placeholder.png'),
+                  radius: 20,
+                ),
+                const SizedBox(width: 8),
+              ],
+              Flexible(
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    Container(
+                      margin: EdgeInsets.only(
+                          bottom: message.reactions.isNotEmpty ? 12 : 0),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 12),
+                      decoration: BoxDecoration(
+                        gradient: isCurrentUser
+                            ? const LinearGradient(
+                                colors: [Color(0xFFFD7C36), Color(0xFFEA4E00)],
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight)
+                            : null,
+                        color: isCurrentUser
+                            ? null
+                            : (isDark
+                                ? const Color(0xFF1E222B)
+                                : Colors.grey[100]),
+                        borderRadius: BorderRadius.only(
+                          topLeft: const Radius.circular(20),
+                          topRight: const Radius.circular(20),
+                          bottomLeft: Radius.circular(isCurrentUser ? 20 : 0),
+                          bottomRight: Radius.circular(isCurrentUser ? 0 : 20),
+                        ),
+                        border: isCurrentUser
+                            ? null
+                            : Border.all(
+                                color: isDark
+                                    ? const Color(0xFF2E323F)
+                                    : Colors.grey[200]!,
+                                width: 1.5),
+                        boxShadow: isCurrentUser
+                            ? [
+                                BoxShadow(
+                                    color: const Color(0xFFFD7C36)
+                                        .withValues(alpha: 0.3),
+                                    blurRadius: 8,
+                                    spreadRadius: 1,
+                                    offset: const Offset(0, 4))
+                              ]
+                            : [],
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (!isCurrentUser)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 4),
+                              child: Text(
+                                message.userName,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                  color:
+                                      isDark ? const Color(0xFFFDBA8C) : null,
+                                ),
+                              ),
+                            ),
+                          if (message.type == MessageType.image &&
+                              message.imageUrls != null &&
+                              message.imageUrls!.isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 8),
+                              child: EncryptedChatImage(
+                                reference: message.imageUrls!.first,
+                                conversation:
+                                    ConversationRef.activity(activityId),
+                                borderRadius: 8,
+                              ),
+                            ),
+                          if (message.message.isNotEmpty)
+                            Text(
+                              message.message,
+                              style: TextStyle(
+                                color: isCurrentUser
+                                    ? Colors.white
+                                    : (isDark
+                                        ? const Color(0xFFE2E8F0)
+                                        : Colors.black87),
+                                fontSize: 14,
+                                // Un mensaje ilegible lleva un aviso de la app,
+                                // no texto de nadie: se distingue en cursiva.
+                                fontStyle: message.isReadable
+                                    ? FontStyle.normal
+                                    : FontStyle.italic,
+                              ),
+                            ),
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  message.getTimeString(),
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: isCurrentUser
+                                        ? Colors.white70
+                                        : (isDark
+                                            ? Colors.white54
+                                            : Colors.grey[600]),
+                                  ),
+                                ),
+                                if (message.isEdited)
+                                  Text(
+                                    ' (editado)',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: isCurrentUser
+                                          ? Colors.white70
+                                          : (isDark
+                                              ? Colors.white54
+                                              : Colors.grey[600]),
+                                      fontStyle: FontStyle.italic,
+                                    ),
+                                  ),
+                                if (isCurrentUser) ...[
+                                  const SizedBox(width: 4),
+                                  Icon(
+                                    message.readBy.isNotEmpty
+                                        ? Icons.done_all
+                                        : Icons.done,
+                                    size: 14,
+                                    color: message.readBy.isNotEmpty
+                                        ? Colors.blue[100]
+                                        : Colors.white70,
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (message.reactions.isNotEmpty)
+                      Positioned(
+                        bottom: 0,
+                        right: isCurrentUser ? 10 : null,
+                        left: isCurrentUser ? null : 10,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 4, vertical: 2),
+                          decoration: BoxDecoration(
+                            color:
+                                isDark ? const Color(0xFF161920) : Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                                color: isDark
+                                    ? const Color(0xFF2E323F)
+                                    : Colors.grey.shade300),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: () {
+                              final map = <String, int>{};
+                              for (var r in message.reactions) {
+                                map[r.reaction] = (map[r.reaction] ?? 0) + 1;
+                              }
+                              return map.entries
+                                  .map((e) => Padding(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 2),
+                                        child: Text('${e.key} ${e.value}',
+                                            style:
+                                                const TextStyle(fontSize: 10)),
+                                      ))
+                                  .toList();
+                            }(),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              if (isCurrentUser) const SizedBox(width: 8),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Widget para mostrar un aporte
+class _ContributionCard extends StatelessWidget {
+  final Contribution contribution;
+  final VoidCallback onToggle;
+
+  const _ContributionCard({
+    required this.contribution,
+    required this.onToggle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final categoryEmoji = _getCategoryEmoji(contribution.category);
+    final isCovered = contribution.isCovered;
+
+    // Si el título ya tiene un emoji al inicio, no mostramos el de la categoría para evitar duplicados
+    final bool hasEmojiInTitle = contribution.title.isNotEmpty &&
+        RegExp(r'[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]', unicode: true)
+            .hasMatch(contribution.title.characters.first);
+
+    return GestureDetector(
+      onTap: onToggle,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 300),
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          border: Border.all(
+              color: isCovered
+                  ? Colors.green.withValues(alpha: 0.4)
+                  : const Color(0xFFFD7C36).withValues(alpha: 0.3),
+              width: 1.5),
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: [
+            BoxShadow(
+              color: isCovered
+                  ? Colors.green.withValues(alpha: 0.05)
+                  : const Color(0xFFFD7C36).withValues(alpha: 0.05),
+              blurRadius: 15,
+              offset: const Offset(0, 8),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                if (!hasEmojiInTitle) ...[
+                  Text(categoryEmoji, style: const TextStyle(fontSize: 20)),
+                  const SizedBox(width: 8),
+                ],
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        contribution.title,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 14),
+                      ),
+                      if (contribution.description.isNotEmpty)
+                        Text(
+                          contribution.description,
+                          style:
+                              TextStyle(fontSize: 12, color: Colors.grey[700]),
+                        ),
+                    ],
+                  ),
+                ),
+                if (contribution.isRequired)
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                          colors: [Colors.redAccent, Colors.red]),
+                      borderRadius: BorderRadius.circular(12),
+                      boxShadow: [
+                        BoxShadow(
+                            color: Colors.red.withValues(alpha: 0.3),
+                            blurRadius: 4,
+                            offset: const Offset(0, 2))
+                      ],
+                    ),
+                    child: const Text(
+                      'URGENTE',
+                      style: TextStyle(
+                          fontSize: 9,
+                          color: Colors.white,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: 0.5),
+                    ),
+                  ),
+              ],
+            ),
+            if (contribution.isCovered) ...[
+              const SizedBox(height: 16),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                    color: Colors.green.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(16)),
+                child: Row(
+                  children: [
+                    Container(
+                      decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.green, width: 2)),
+                      child: CircleAvatar(
+                        backgroundImage: (contribution.assignedToUserImage
+                                    ?.startsWith('http') ??
+                                false)
+                            ? NetworkImage(contribution.assignedToUserImage!)
+                                as ImageProvider
+                            : const AssetImage('assets/images/placeholder.png'),
+                        radius: 12,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        contribution.assignedToUserName ?? 'Usuario',
+                        style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black87),
+                      ),
+                    ),
+                    if (contribution.assignedToUserId ==
+                        context.read<AppState>().currentUser?.id)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: Colors.green,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.check_circle_rounded,
+                                color: Colors.white, size: 12),
+                            SizedBox(width: 4),
+                            Text(
+                              'Yo lo llevo',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ] else
+              Padding(
+                padding: const EdgeInsets.only(top: 16),
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                          colors: [Color(0xFFFD7C36), Color(0xFFEA4E00)]),
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                            color:
+                                const Color(0xFFFD7C36).withValues(alpha: 0.3),
+                            blurRadius: 8,
+                            offset: const Offset(0, 4))
+                      ]),
+                  child: const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.front_hand_rounded,
+                          color: Colors.white, size: 16),
+                      SizedBox(width: 8),
+                      Text(
+                        '¡Yo pongo esto!',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                            letterSpacing: 0.5),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _getCategoryEmoji(String category) {
+    switch (category.toLowerCase()) {
+      case 'food':
+      case 'comida':
+        return '🍕';
+      case 'drinks':
+      case 'bebidas':
+        return '🥤';
+      case 'supplies':
+      case 'suministros':
+        return '🎒';
+      case 'entertainment':
+      case 'entretenimiento':
+        return '🎵';
+      case 'deportes':
+      case 'sports':
+        return '⚽';
+      case 'naturaleza':
+        return '🌿';
+      case 'chill':
+        return '🥤';
+      case 'juntas':
+        return '🎉';
+      default:
+        return '✨';
+    }
+  }
+}
+
+class _SegmentTab extends StatelessWidget {
+  final IconData icon;
+  final String label;
+
+  const _SegmentTab({required this.icon, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Tab(
+      height: 38,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, size: 16),
+          const SizedBox(width: 6),
+          Flexible(child: Text(label, overflow: TextOverflow.ellipsis)),
+        ],
+      ),
+    );
+  }
+}

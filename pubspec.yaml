@@ -1,0 +1,89 @@
+name: join_app
+description: "Join - Conecta y participa en actividades grupales."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.1.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.6
+  google_fonts: ^6.1.0
+  flutter_animate: ^4.5.0
+  font_awesome_flutter: ^10.7.0
+  go_router: ^13.0.0
+  provider: ^6.1.1
+  intl: ^0.19.0
+  cached_network_image: ^3.3.1
+  transparent_image: ^2.0.0
+  geolocator: ^10.1.0
+  geocoding: ^2.1.1
+  timeago: ^3.6.0
+  http: ^1.2.0
+  shared_preferences: ^2.2.0
+  supabase_flutter: ^2.8.0
+  flutter_local_notifications: ^17.2.2
+  google_sign_in: ^6.2.1
+  permission_handler: ^11.3.1
+  image_picker: ^1.2.1
+  flutter_map: ^7.0.2
+  latlong2: ^0.9.0
+  encrypt: ^5.0.3
+  map_launcher: ^4.5.0
+  url_launcher: ^6.3.2
+  cryptography: ^2.9.0
+  flutter_secure_storage: 9.2.4
+  bip39: ^1.0.6
+  google_maps_flutter: ^2.18.1
+  # flutter_facebook_auth: ^7.0.1   # activar cuando se tenga App ID Facebook
+  # firebase_core: ^2.24.2
+  # firebase_auth: ^4.16.0
+  # cloud_firestore: ^4.14.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+  flutter_native_splash: ^2.3.10
+  flutter_launcher_icons: ^0.13.1
+  # Sólo para tool/verify_e2e_encryption.dart, que corre con `dart run` y no
+  # puede usar supabase_flutter. Fijado a la versión que ya venía de forma
+  # transitiva: dejarlo abierto arrastraba supabase_flutter a otra versión
+  # mayor sin necesidad.
+  supabase: 2.10.6
+
+# Splash nativo: sólo el fondo, sin logo.
+#
+# Es la pantalla que enseña el sistema mientras arranca el motor de Flutter, y
+# no puede animarse. Si mostrara el logo centrado, al entrar la animación el
+# logo daría un salto para volver a caer desde arriba. Dejándolo vacío, la
+# transición al splash animado es invisible: fondo -> fondo con logo cayendo.
+flutter_native_splash:
+  color: "#FFFFFF"
+  color_dark: "#0A0D14"
+  android: true
+  ios: true
+  web: false
+  android_12:
+    color: "#FFFFFF"
+    color_dark: "#0A0D14"
+
+# Configuración del Icono de la App
+flutter_launcher_icons:
+  android: "launcher_icon"
+  ios: true
+  image_path: "assets/images/join.png"
+  min_sdk_android: 21
+  remove_alpha_ios: true
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/
+    - assets/images/activities/
+    - assets/images/avatars/
+    - assets/images/mascota/
+    - assets/images/mascota/animado/
+    - assets/images/wallpaper/
